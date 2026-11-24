@@ -1,0 +1,10 @@
+# Top-level pins. `uv pip compile requirements.in -o requirements.txt --python-version 3.13` locks the rest.
+# Video sites change often: bumping yt-dlp (and curl_cffi for fresh browser fingerprints) and releasing is routine.
+yt-dlp[default]==2026.11.23
+yt-dlp-ejs==0.8.0
+curl_cffi==0.17.0
+libtorrent==2.1.3
+mcp==2.3.0
+starlette==1.10.0
+uvicorn==0.54.0
+httpx==0.28.1

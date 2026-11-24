@@ -1,0 +1,120 @@
+name: Release Container
+
+# Manual only, like every other release workflow in the Maple family; there is no push or tag trigger.
+# Build, prove, push. Deployment is out-of-band: mk-provisioning runs the image from the catalog row this workflow
+# prints in its summary.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Image tag, e.g. 1.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write        # push to GitHub Container Registry
+
+env:
+  IMAGE: ghcr.io/ericngo1972/mk-download   # GHCR image names must be lowercase
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -f Dockerfile -t mk-download:ci .
+
+      # Prove the image honours the provisioner's contract before it is published.
+      - name: Verify the image
+        run: |
+          token=ci-only-mcp-token-0123456789
+          password=ci-only-admin-password-0123
+          hook=ci-only-webhook-secret
+          base=http://localhost:18000
+
+          fail() {
+            echo "::error ::$1"
+            docker logs verify 2>&1 | tail -50 || true
+            docker rm -f verify > /dev/null 2>&1 || true
+            exit 1
+          }
+
+          # No secrets: the container must refuse to run, not serve the internet anonymously.
+          docker run -d --name verify mk-download:ci > /dev/null
+          code=$(docker wait verify)
+          [ "$code" = "64" ] || fail "a container without MCP_TOKEN did not refuse to start (exit $code)"
+          docker logs verify 2>&1 | grep -q 'refusing to start' || fail "the refusal does not say why"
+          docker rm verify > /dev/null
+          docker run -d --name verify -e MCP_TOKEN=$token -e ADMIN_PASSWORD=$token mk-download:ci > /dev/null
+          code=$(docker wait verify)
+          [ "$code" = "64" ] || fail "equal MCP_TOKEN and ADMIN_PASSWORD were accepted (exit $code)"
+          docker rm verify > /dev/null
+          echo "  ok: no secrets, no server"
+
+          # The engines are in the image and work.
+          docker run --rm --entrypoint sh mk-download:ci -c '
+            set -e
+            ffmpeg -version | head -1
+            deno --version | head -1
+            test -x /opt/kelpie/kelpie && echo "kelpie present"
+            python -c "import libtorrent; print(\"libtorrent\", libtorrent.__version__)"
+            python -m yt_dlp --list-impersonate-targets | grep -q "Chrome.*curl_cffi" && echo "impersonation available"
+          ' || fail "an engine is missing from the image"
+          echo "  ok: ffmpeg, deno, kelpie, libtorrent, curl_cffi impersonation"
+
+          # A test video, served from the runner to the container.
+          mkdir -p /tmp/media /tmp/data
+          docker run --rm --entrypoint ffmpeg -v /tmp/media:/out mk-download:ci -loglevel error -y \
+            -f lavfi -i testsrc=duration=20:size=640x360:rate=25 -f lavfi -i sine=frequency=440:duration=20 \
+            -c:v libx264 -g 50 -c:a aac -shortest /out/test.mp4
+          (cd /tmp/media && python3 -m http.server 18766 --bind 0.0.0.0 > /dev/null 2>&1 &)
+
+          # What the provisioner runs: loopback port, memory cap, a root-owned host folder at /data, the env.
+          sudo chown root:root /tmp/data
+          docker run -d --name verify -p 127.0.0.1:18000:8000 --memory=2g --memory-swap=2g \
+            --add-host host.docker.internal:host-gateway -v /tmp/data:/data \
+            -e TENANT_ID=ci -e MCP_TOKEN=$token -e ADMIN_PASSWORD=$password -e WEBHOOK_SECRET=$hook \
+            mk-download:ci > /dev/null
+          for _ in $(seq 1 60); do curl -fsS -o /dev/null $base/healthz 2>/dev/null && break; sleep 1; done
+          curl -fsS -o /dev/null $base/healthz || fail "/healthz did not answer within the provisioner's 60 s"
+          echo "  ok: /healthz answers"
+          [ "$(docker exec verify stat -c %U /data)" = "app" ] || fail "/data was not handed to the app user"
+
+          python3 tests/smoke.py $base $token $password $hook http://host.docker.internal:18766/test.mp4 host.docker.internal \
+            || fail "the end-to-end check failed"
+
+          docker stop -t 30 verify > /dev/null
+          code=$(docker inspect -f '{{.State.ExitCode}}' verify)
+          [ "$code" = "0" ] || fail "docker stop did not shut down cleanly (exit $code)"
+          docker rm verify > /dev/null
+          echo "  ok: stopped cleanly"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        run: |
+          docker tag mk-download:ci "$IMAGE:${{ inputs.version }}"
+          docker tag mk-download:ci "$IMAGE:latest"
+          docker push "$IMAGE:${{ inputs.version }}"
+          docker push "$IMAGE:latest"
+
+      # This summary IS the deploy handoff: paste the row into the provisioner's catalog.
+      - name: Summary
+        run: |
+          {
+            echo "Pushed \`$IMAGE:${{ inputs.version }}\` and \`$IMAGE:latest\`"
+            echo ""
+            echo "Catalog row -> RowKey=mkdownload, Name=Maple Download, ImageRepository=$IMAGE, ImageTag=${{ inputs.version }}, InternalPort=8000, Memory=2g, HealthPath=/healthz, DataMountPath=/data, InjectDotNetDefaults=false, Args=(blank), IssuesActivation=false, ClientPath=/settings, BackupByDump=false, HostNetwork=false"
+            echo ""
+            echo "Product env -> \`MCP_TOKEN\` and \`ADMIN_PASSWORD\` (secret, **required**, 16+ characters, different), \`WEBHOOK_SECRET\` (secret, needed for callbacks), \`LINK_SECRET\` (secret, optional), \`PROXY_URL\` and \`PUBLIC_URL\` (optional). See deploy/mk-provisioning.md."
+          } >> "$GITHUB_STEP_SUMMARY"
