@@ -168,7 +168,8 @@ class Pages:
         session = self.session_of(request)
         if session is None:
             return HTMLResponse(render_login())
-        return HTMLResponse(self.render(self.csrf_of(session), message, problems or []))
+        base = self.service.base_url or str(request.base_url).rstrip("/")
+        return HTMLResponse(self.render(self.csrf_of(session), message, problems or [], base))
 
     async def save(self, request: Request) -> Response:
         authorized = await self.authorized_form(request)
@@ -241,7 +242,7 @@ class Pages:
 
     # rendering
 
-    def render(self, csrf: str, message: str, problems: list[str]) -> str:
+    def render(self, csrf: str, message: str, problems: list[str], base_url: str = "") -> str:
         service = self.service
         settings = service.settings
         usage = service.disk.usage()
@@ -282,13 +283,14 @@ class Pages:
             for row in undelivered
         ) or '<tr><td colspan="6" class="muted">None.</td></tr>'
 
+        all_jobs = service.jobs.by_status()
         job_rows = "".join(
             f'<tr><td><code>{e(job.id)}</code></td><td>{e(job.kind)}{" · live" if job.is_live else ""}</td>'
             f'<td><span class="status s-{e(job.status)}">{e(job.status)}</span></td>'
             f'<td class="wrap">{e(job.progress.get("title") or job.url)}</td>'
             f'<td>{e(format_percent(job.progress.get("percent")))}</td>'
             f'<td class="wrap">{e(job.error_code or "")}</td></tr>'
-            for job in service.jobs.by_status()[:25]
+            for job in all_jobs[:25]
         ) or '<tr><td colspan="6" class="muted">No jobs yet.</td></tr>'
 
         version_text = " · ".join(f"{name} {value}" for name, value in versions().items())
@@ -297,7 +299,7 @@ class Pages:
         pending = service.store.count_events("pending")
         return PAGE.format(
             body=f"""
-<header><h1>mk-download</h1><form method="post" action="/settings/logout">{hidden}<button class="link">Sign out</button></form></header>
+<header><h1>mk-download</h1><nav><a href="#guide">User guide</a><form method="post" action="/settings/logout">{hidden}<button class="link">Sign out</button></form></nav></header>
 {"".join(notices)}
 <section class="stats">
   <div><span class="label">Disk used</span><span class="value">{files.gib(used)} of {files.gib(quota)}</span>
@@ -307,12 +309,13 @@ class Pages:
   <div><span class="label">Webhooks</span><span class="value">{pending} pending · {len(undelivered)} undelivered</span></div>
 </section>
 <p class="muted small">{e(version_text)}</p>
+{render_guide(base_url, open_=not all_jobs)}
 
 <h2>Settings</h2>
 <form method="post" action="/settings/save" class="settings">{hidden}{form_body}
 <div class="actions"><button type="submit">Save settings</button></div></form>
 
-<h2>Cookies</h2>
+<h2 id="cookies">Cookies</h2>
 <p class="muted">Stored only on the server; no tool returns them. Requests with a site's cookies impersonate the browser they came from.</p>
 <table><thead><tr><th>Site</th><th>Browser</th><th>Saved</th><th></th></tr></thead><tbody>{cookie_rows}</tbody></table>
 <form method="post" action="/settings/cookies" enctype="multipart/form-data" class="cookies">{hidden}
@@ -323,10 +326,10 @@ class Pages:
   <div class="actions"><button type="submit">Save cookies</button></div>
 </form>
 
-<h2>Undelivered webhooks</h2>
+<h2 id="webhooks">Undelivered webhooks</h2>
 <table><thead><tr><th>Job</th><th>Event</th><th>URL</th><th>Tries</th><th>Last error</th><th></th></tr></thead><tbody>{webhook_rows}</tbody></table>
 
-<h2>Recent jobs</h2>
+<h2 id="jobs">Recent jobs</h2>
 <table><thead><tr><th>Job</th><th>Kind</th><th>Status</th><th>Title</th><th>Progress</th><th>Error</th></tr></thead><tbody>{job_rows}</tbody></table>
 """
         )
@@ -380,6 +383,114 @@ def render_setting(setting, value, default, csrf: str) -> str:
     )
 
 
+def render_guide(base_url: str, open_: bool) -> str:
+    """The user guide shown after sign-in: open until the first job exists, collapsed after that."""
+    mcp_url = e(f"{base_url}/mcp")
+    return f"""
+<details class="guide" id="guide"{" open" if open_ else ""}><summary>User guide: how to use mk-download</summary>
+<p>mk-download has no download form. You ask an AI agent (Claude Code, Claude Desktop, or any MCP client) to
+download something, the agent calls this service, and you get back a link to the file. This page is where you
+set limits, add login cookies and see what's going on.</p>
+
+<h3>1. Connect your agent</h3>
+<p>Add an MCP server with these values. The token is the <code>MCP_TOKEN</code> set when the service was provisioned.
+This page never shows it.</p>
+<table class="kv"><tbody>
+<tr><th>URL</th><td><code>{mcp_url}</code></td></tr>
+<tr><th>Transport</th><td>Streamable HTTP</td></tr>
+<tr><th>Header</th><td><code>Authorization: Bearer &lt;MCP_TOKEN&gt;</code></td></tr>
+</tbody></table>
+<p>For Claude Code, run:</p>
+<pre>claude mcp add --transport http mk-download {mcp_url} --header "Authorization: Bearer &lt;MCP_TOKEN&gt;"</pre>
+
+<h3>2. Ask for what you want</h3>
+<p>Talk to the agent in plain language. For example:</p>
+<ul>
+<li>"Download this YouTube video in 1080p: https://…" (the agent checks the available qualities first, then starts a job)</li>
+<li>"Get only the audio of https://… as a file I can share."</li>
+<li>"Cut 1:30 to 2:45 out of https://…" (it downloads only that clip)</li>
+<li>"Download this video with English subtitles embedded." or "Give me the transcript of https://…"</li>
+<li>"Record this livestream for 2 hours: https://…", then "stop the recording" to end it early and keep what was recorded</li>
+<li>"Download this magnet link, but only the .mkv files." (torrents and eD2k links work too)</li>
+<li>"What's downloading right now?", "Pause job …", "Cancel job …", "How much disk is left?"</li>
+</ul>
+<p>Video sites include YouTube, TikTok, Instagram and Facebook Reels, Bilibili and about 1,800 others, plus raw
+<code>.m3u8</code> / <code>.mpd</code> stream URLs.</p>
+
+<h3>3. Get the file</h3>
+<p>When a job finishes, the agent replies with a link like <code>{e(base_url)}/f/…</code>. Anyone with the link can
+download the file until the link expires. Links last <b>Default link expiry</b> hours unless you ask for longer, up to
+<b>Maximum link expiry</b>. To get a fresh link for an existing file, ask the agent. Finished files are deleted after
+<b>Delete finished files after</b> days. You can change all three under <i>Settings</i> below.</p>
+
+<h3>4. Sites that need a login</h3>
+<p>Instagram and Facebook Reels always need login cookies. YouTube needs them for age-restricted videos, and Bilibili
+for HD. If the agent reports <code>login_required</code>:</p>
+<ol>
+<li>In a browser profile you use only for this, sign in to the site.</li>
+<li>Export its cookies as <code>cookies.txt</code> with an extension such as <i>Get cookies.txt LOCALLY</i>.</li>
+<li>Under <a href="#cookies">Cookies</a> below, enter the site (e.g. <code>instagram.com</code>), choose the browser
+you exported from, upload or paste the file, then click <b>Save cookies</b>. Then ask the agent to try again.</li>
+</ol>
+
+<h3>5. Get notified when a job finishes (optional)</h3>
+<p>Ask the agent to pass a <code>callback_url</code>, or set a <b>Default callback URL</b> below. When the job completes,
+fails or is cancelled, the service POSTs a JSON event there, signed with <code>WEBHOOK_SECRET</code> in the
+<code>X-MK-Signature</code> header. Failed deliveries are retried for 24 hours and then appear under
+<a href="#webhooks">Undelivered webhooks</a>, which has a <b>Retry</b> button.</p>
+
+<h3>6. MCP tools</h3>
+<p>These are the tools the agent sees. You don't call them yourself, but knowing them helps you ask for the right thing.
+The usual order is <code>probe</code> → <code>download</code> → <code>get_job</code> until it's <code>completed</code> → <code>get_link</code>.</p>
+<table class="kv"><tbody>
+<tr><th><code>probe(url)</code></th><td>Title, length, qualities with sizes, subtitle languages and live state. For torrents, the file list. For eD2k links, the name and size.</td></tr>
+<tr><th><code>download(url, …)</code></th><td>Starts a job and returns its <code>job_id</code> right away. Options: <code>quality</code>, <code>audio_only</code>, <code>subtitles</code>, <code>auto_subs</code>, <code>sub_format</code>, <code>embed_subs</code>, <code>subtitles_only</code>, <code>clip</code>, <code>precise</code>, <code>files</code>, <code>live</code>, <code>max_duration</code>, <code>from_start</code>, <code>wait_for_start</code>, <code>impersonate</code>, <code>name</code>, <code>keep</code>, <code>callback_url</code>, <code>callback_ref</code>, <code>notify_progress</code>.</td></tr>
+<tr><th><code>add_torrent_file(torrent_base64, …)</code></th><td>Starts a torrent job from an uploaded <code>.torrent</code> file.</td></tr>
+<tr><th><code>get_transcript(url, lang)</code></th><td>Returns the subtitle text in the reply, with no file saved.</td></tr>
+<tr><th><code>list_jobs(status?)</code>, <code>get_job(id)</code></th><td>Status, percent, speed, ETA, recorded time, error, and the files with links.</td></tr>
+<tr><th><code>pause</code>, <code>resume</code>, <code>stop</code>, <code>cancel</code></th><td><code>stop</code> ends a live recording and keeps it. <code>cancel</code> deletes the job's files.</td></tr>
+<tr><th><code>list_files</code>, <code>delete_file</code>, <code>clip_file</code>, <code>get_link</code></th><td>List and delete stored files, cut a clip from a file, and get a signed link.</td></tr>
+<tr><th><code>disk_usage</code>, <code>set_cookies</code>, <code>get_settings</code></th><td>Quota usage, login cookies per site, and the current limits (read-only).</td></tr>
+</tbody></table>
+<p>Job states: <code>queued</code> → <code>waiting</code> (scheduled live streams only) → <code>downloading</code> / <code>recording</code>
+→ <code>finalizing</code> → <code>completed</code>. A job can also end up <code>paused</code>, <code>failed</code> or <code>cancelled</code>.</p>
+
+<h3>7. HTTP API</h3>
+<table class="kv"><tbody>
+<tr><th><code>POST /mcp</code></th><td>MCP over Streamable HTTP (stateless JSON-RPC). Needs <code>Authorization: Bearer &lt;MCP_TOKEN&gt;</code>.</td></tr>
+<tr><th><code>GET /f/&lt;token&gt;/&lt;name&gt;</code></th><td>Downloads a file. The link is signed and expires, so no login is needed.</td></tr>
+<tr><th><code>GET /healthz</code></th><td>Open to anyone. It only reports that the process is up.</td></tr>
+<tr><th><code>/settings</code></th><td>This page, protected by the admin password.</td></tr>
+</tbody></table>
+<p>To call a tool from a script without an agent, send a JSON-RPC <code>tools/call</code>:</p>
+<pre>curl -s -X POST {mcp_url} \\
+  -H "Authorization: Bearer &lt;MCP_TOKEN&gt;" \\
+  -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \\
+  -d '{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"download","arguments":{{"url":"https://…","quality":"720"}}}}}}'</pre>
+<p>The result has <code>structuredContent</code> with the tool's reply. Use <code>"method":"tools/list"</code> to get every tool and its
+parameters. If a tool fails, the reply has <code>isError: true</code> and its text is JSON like
+<code>{{"error": "&lt;code&gt;", "message": "…"}}</code>.</p>
+<p>The webhook body has these fields: <code>event_id</code>, <code>type</code> (<code>job.completed</code>, <code>job.failed</code>,
+<code>job.cancelled</code>, and with <code>notify_progress</code> also <code>job.started</code> and <code>job.progress</code>), <code>job_id</code>,
+<code>callback_ref</code>, <code>status</code>, <code>files</code> (each with a <code>link</code>) and <code>error</code>. Check
+<code>X-MK-Signature: sha256=&lt;hex&gt;</code>, which is the HMAC-SHA256 of the raw body with <code>WEBHOOK_SECRET</code>. A webhook can
+arrive more than once, so ignore repeats of an <code>event_id</code>.</p>
+
+<h3>8. When something goes wrong</h3>
+<table class="kv"><tbody>
+<tr><th><code>login_required</code></th><td>Add the site's cookies (step 4).</td></tr>
+<tr><th><code>blocked_by_challenge</code></th><td>The site is blocking this server. Try again later, add cookies, or set a <b>Proxy URL</b> under Network.</td></tr>
+<tr><th><code>quota_exceeded</code></th><td>The disk is full. Ask the agent to delete old files, or raise <b>Disk quota</b>.</td></tr>
+<tr><th><code>queue_full</code></th><td>Too many jobs are waiting. Wait for some to finish, or raise <b>Queue size limit</b>.</td></tr>
+<tr><th><code>site_blocked</code></th><td>The site is on <b>Blocked sites</b>, or isn't on <b>Allowed sites</b> when that list is set.</td></tr>
+<tr><th><code>engine_disabled</code></th><td>BitTorrent or eD2k is turned off under <i>Torrent / eD2k</i>.</td></tr>
+<tr><th><code>drm_protected</code></th><td>The video is DRM-protected and can't be downloaded.</td></tr>
+<tr><th><code>401 unauthorized</code></th><td>The agent's token is wrong. Check the <code>Authorization</code> header (step 1).</td></tr>
+</tbody></table>
+<p>To follow your jobs, see <a href="#jobs">Recent jobs</a> at the bottom of this page.</p>
+</details>"""
+
+
 def render_login(error: str = "") -> str:
     note = f'<div class="note bad">{e(error)}</div>' if error else ""
     return PAGE.format(body=f"""
@@ -424,6 +535,12 @@ td.wrap {{ word-break:break-all; }}
 .note {{ border-radius:6px; padding:8px 12px; margin:10px 0; border:1px solid; }}
 .note.ok {{ color:var(--ok); }} .note.bad {{ color:var(--bad); }} .note.warn {{ color:var(--warn); }}
 .status {{ font-weight:600; }} .s-completed {{ color:var(--ok); }} .s-failed {{ color:var(--bad); }}
+header nav {{ display:flex; align-items:center; gap:16px; font-size:13px; }} a {{ color:var(--accent); }}
+.guide {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 16px; margin:16px 0; }}
+.guide summary {{ font-weight:600; cursor:pointer; }} .guide h3 {{ font-size:15px; margin:18px 0 4px; }}
+.guide ul, .guide ol {{ padding-left:20px; margin:4px 0; }} .guide li {{ margin:2px 0; }}
+.guide pre {{ background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px 10px; overflow-x:auto; font-size:13px; white-space:pre-wrap; word-break:break-all; }}
+.guide table.kv {{ margin:6px 0; }} .guide table.kv th {{ color:var(--text); width:200px; border-top:1px solid var(--line); }}
 .login {{ max-width:340px; margin:12vh auto; }} .login form {{ display:flex; gap:8px; margin-top:12px; }} .login input {{ flex:1; }}
 @media (max-width:600px) {{ .row {{ grid-template-columns:1fr; }} .help {{ grid-column:1; }} table {{ display:block; overflow-x:auto; }} }}
 </style></head><body><main>{body}</main></body></html>"""
