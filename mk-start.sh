@@ -31,11 +31,14 @@ mkdir -p "$data"
 log "tenant=${TENANT_ID:-?} data=$data webhooks=$([ -n "${WEBHOOK_SECRET:-}" ] && echo on || echo off) proxy=$([ -n "${PROXY_URL:-}" ] && echo on || echo off)"
 
 if [ "$(id -u)" = "0" ]; then
-    # The host creates the mounted folder as root; the service runs as `app`.
-    if [ "$(stat -c %u "$data")" != "1000" ]; then
-        log "giving $data to the app user"
-        chown -R app:app "$data"
+    # The service runs as `app`. The mounted folder itself belongs to the provisioner, which chmods it on every
+    # redeploy: never change its owner, or that chmod fails ("Operation not permitted") and the tenant can no
+    # longer be redeployed. Make it writable instead, and give only what is inside it to `app`.
+    if ! setpriv --reuid=app --regid=app --init-groups test -w "$data"; then
+        log "making $data writable for the app user"
+        chmod a+rwx "$data"
     fi
+    find "$data" -mindepth 1 \( ! -user app -o ! -group app \) -exec chown -h app:app {} +
     exec env HOME=/home/app setpriv --reuid=app --regid=app --init-groups python -m mkdownload "$@"
 fi
 exec python -m mkdownload "$@"

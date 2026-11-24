@@ -74,8 +74,10 @@ jobs:
             -c:v libx264 -g 50 -c:a aac -shortest /out/test.mp4
           (cd /tmp/media && python3 -m http.server 18766 --bind 0.0.0.0 > /dev/null 2>&1 &)
 
-          # What the provisioner runs: loopback port, memory cap, a root-owned host folder at /data, the env.
-          sudo chown root:root /tmp/data
+          # What the provisioner runs: loopback port, memory cap, a host folder at /data that belongs to the
+          # provisioner's own user (not root, not the app's uid 1000), the env.
+          sudo chown 1500:1500 /tmp/data
+          sudo chmod 755 /tmp/data
           docker run -d --name verify -p 127.0.0.1:18000:8000 --memory=2g --memory-swap=2g \
             --add-host host.docker.internal:host-gateway -v /tmp/data:/data \
             -e TENANT_ID=ci -e MCP_TOKEN=$token -e ADMIN_PASSWORD=$password -e WEBHOOK_SECRET=$hook \
@@ -83,7 +85,10 @@ jobs:
           for _ in $(seq 1 60); do curl -fsS -o /dev/null $base/healthz 2>/dev/null && break; sleep 1; done
           curl -fsS -o /dev/null $base/healthz || fail "/healthz did not answer within the provisioner's 60 s"
           echo "  ok: /healthz answers"
-          [ "$(docker exec verify stat -c %U /data)" = "app" ] || fail "/data was not handed to the app user"
+          # The provisioner chmods the folder on every redeploy, as its owner: the container must never take it.
+          [ "$(stat -c %u /tmp/data)" = "1500" ] || fail "the container changed the owner of the mounted folder; redeploys would fail"
+          sudo -u '#1500' chmod 755 /tmp/data || fail "the provisioner could no longer chmod its folder"
+          [ "$(docker exec verify stat -c %U /data/state)" = "app" ] || fail "the app user does not own what it writes in /data"
 
           python3 tests/smoke.py $base $token $password $hook http://host.docker.internal:18766/test.mp4 host.docker.internal \
             || fail "the end-to-end check failed"
