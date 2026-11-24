@@ -247,7 +247,7 @@ class Pages:
         if not settings["public_files"]:
             return PlainTextResponse("Not found.", status_code=404)
         downloads = self.service.env.downloads
-        items = files.list_files(downloads, self.service.store, settings, "")
+        items = files.list_files(downloads, self.service.store, settings, "", self.service.jobs.busy_folders())
         now = time.time()
         rows = []
         for item in items:
@@ -489,6 +489,7 @@ The usual order is <code>probe</code> → <code>download</code> → <code>get_jo
 <tr><th><code>download(url, …)</code></th><td>Starts a job and returns its <code>job_id</code> right away. Options: <code>quality</code>, <code>audio_only</code>, <code>subtitles</code>, <code>auto_subs</code>, <code>sub_format</code>, <code>embed_subs</code>, <code>subtitles_only</code>, <code>clip</code>, <code>precise</code>, <code>files</code>, <code>live</code>, <code>max_duration</code>, <code>from_start</code>, <code>wait_for_start</code>, <code>impersonate</code>, <code>name</code>, <code>keep</code>, <code>callback_url</code>, <code>callback_ref</code>, <code>notify_progress</code>.</td></tr>
 <tr><th><code>add_torrent_file(torrent_base64, …)</code></th><td>Starts a torrent job from an uploaded <code>.torrent</code> file.</td></tr>
 <tr><th><code>get_transcript(url, lang)</code></th><td>Returns the subtitle text in the reply, with no file saved.</td></tr>
+<tr><th><code>active_downloads()</code></th><td>What is downloading right now, with percent complete, speed and ETA, followed by the queued jobs.</td></tr>
 <tr><th><code>list_jobs(status?)</code>, <code>get_job(id)</code></th><td>Status, percent, speed, ETA, recorded time, error, and the files with links.</td></tr>
 <tr><th><code>pause</code>, <code>resume</code>, <code>stop</code>, <code>cancel</code></th><td><code>stop</code> ends a live recording and keeps it. <code>cancel</code> deletes the job's files.</td></tr>
 <tr><th><code>list_files</code>, <code>delete_file</code>, <code>clip_file</code>, <code>get_link</code></th><td>List and delete stored files, cut a clip from a file, and get a signed link.</td></tr>

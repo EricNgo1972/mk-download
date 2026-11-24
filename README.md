@@ -29,6 +29,7 @@ A headless download service that an AI agent operates over MCP. It runs as one M
 | `download(url, …)` | Starts a job, returns `job_id` at once. Options: `quality`, `audio_only`, `subtitles`, `auto_subs`, `sub_format`, `embed_subs`, `subtitles_only`, `clip`, `precise`, `files`, `live`, `max_duration`, `from_start`, `wait_for_start`, `impersonate`, `name`, `keep`, `callback_url`, `callback_ref`, `notify_progress` |
 | `add_torrent_file(torrent_base64, …)` | Torrent job from an uploaded `.torrent` |
 | `get_transcript(url, lang)` | Subtitle text in the reply, no file |
+| `active_downloads()` | What is downloading now: percent, bytes, speed, ETA (recorded time for live), then queued jobs |
 | `list_jobs(status?)`, `get_job(id)` | Status, percent, speed, ETA, recorded time, error, files with links |
 | `pause`, `resume`, `stop`, `cancel` | `stop` ends a live recording and keeps it; `cancel` deletes the files |
 | `list_files`, `delete_file`, `clip_file`, `get_link` | Stored files, cuts, signed links |
@@ -50,6 +51,7 @@ Manage stored files from a terminal (Python 3.10+, standard library only):
 ```bash
 export MKD_URL=https://download.maplekiosk.ca MCP_TOKEN=<MCP_TOKEN>
 ./mkd.py list                          # numbered list: size, created, auto-delete date, path
+./mkd.py downloading                   # what is downloading now, with % complete
 ./mkd.py get_file_url 1 [hours]        # signed download link for file #1 (or pass a path)
 ./mkd.py delete_file 2 3               # delete files by number or path; a job id deletes its folder
 ./mkd.py delete_all [--include-pinned] [--yes]   # asks first unless --yes

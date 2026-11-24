@@ -1,4 +1,4 @@
-"""The 18 MCP tools the agent operates the service with. Downloads are asynchronous: download returns a job id at
+"""The 19 MCP tools the agent operates the service with. Downloads are asynchronous: download returns a job id at
 once; poll get_job, or pass callback_url to be told by webhook.
 
 Errors come back as tool errors whose text is JSON: {"error": "<code>", "message": "<one sentence>"}.
@@ -200,6 +200,39 @@ def build_server(service: Service) -> MCPServer:
         return {"jobs": [service.describe_job(job) for job in jobs.by_status(status)]}
 
     @server.tool()
+    async def active_downloads() -> dict[str, Any]:
+        """What is downloading right now, with percent complete: running, recording, finalizing and waiting jobs,
+        then queued ones. Paused jobs are counted, not listed."""
+        active = jobs.by_status_in(("downloading", "recording", "finalizing", "waiting", "queued"))
+        items = []
+        for job in active:
+            progress = job.progress
+            percent = progress.get("percent")
+            moving = job.status in ("downloading", "recording")  # a finalizing job's last speed is stale
+            items.append({
+                "job_id": job.id,
+                "title": progress.get("title") or job.url,
+                "kind": job.kind,
+                "status": job.status,
+                "percent": round(percent, 1) if isinstance(percent, int | float) else None,
+                "downloaded_bytes": progress.get("downloaded_bytes"),
+                "total_bytes": progress.get("total_bytes"),
+                "speed_bytes_per_s": round(progress["speed"]) if moving and isinstance(progress.get("speed"), int | float) else None,
+                "eta_seconds": progress.get("eta") if moving else None,
+                "recorded_seconds": progress.get("recorded_seconds") if job.is_live else None,
+                "url": job.url,
+            })
+        order = {"downloading": 0, "recording": 0, "finalizing": 1, "waiting": 2, "queued": 3}
+        items.sort(key=lambda item: order.get(item["status"], 9))
+        return {
+            "active": items,
+            "count": len(items),
+            "running": sum(1 for item in items if item["status"] in ("downloading", "recording", "finalizing")),
+            "queued": sum(1 for item in items if item["status"] == "queued"),
+            "paused": service.store.count_jobs("paused"),
+        }
+
+    @server.tool()
     async def get_job(id: Annotated[str, Field(description="The job_id.")]) -> dict[str, Any]:
         """A job's status, percent, speed, ETA, size, recorded time (live), error and output files with signed links."""
         try:
@@ -247,7 +280,7 @@ def build_server(service: Service) -> MCPServer:
     async def list_files(folder: Annotated[str | None, Field(description="A job's folder (its id) or a sub-folder.")] = None) -> dict[str, Any]:
         """Finished files: path, size, created time, deletion time (null when pinned with keep), pinned."""
         try:
-            items = files.list_files(service.env.downloads, service.store, settings, folder or "")
+            items = files.list_files(service.env.downloads, service.store, settings, folder or "", jobs.busy_folders())
             return {"files": items, "count": len(items)}
         except JobError as error:
             raise fail(error) from None

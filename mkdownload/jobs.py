@@ -98,6 +98,10 @@ class Jobs:
         jobs = self.store.jobs((status,) if status else ())
         return [self.running[job.id].job if job.id in self.running else job for job in jobs]
 
+    def by_status_in(self, statuses: tuple[str, ...]) -> list[Job]:
+        jobs = self.store.jobs(statuses, limit=100000)
+        return [self.running[job.id].job if job.id in self.running else job for job in jobs]
+
     def busy_folders(self) -> set[str]:
         busy = set(self.running)
         busy.update(job.id for job in self.store.jobs(("queued", "paused", *ACTIVE_STATES), limit=100000))
