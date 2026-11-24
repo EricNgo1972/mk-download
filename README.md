@@ -16,7 +16,7 @@ A headless download service that an AI agent operates over MCP. It runs as one M
 | Path | Who | Protection |
 |---|---|---|
 | `/mcp` | the agent (Streamable HTTP, stateless) | `Authorization: Bearer <MCP_TOKEN>` |
-| `/settings` | you | `ADMIN_PASSWORD`, session cookie, CSRF token |
+| `/settings` | you: settings, cookies, jobs, and a user guide (connecting an agent, MCP tools, HTTP API) | `ADMIN_PASSWORD`, session cookie, CSRF token |
 | `/f/<token>/<name>` | anyone with the link | HMAC-signed path and expiry (`LINK_SECRET`) |
 | `/healthz` | the provisioner | open; says only that the process is up |
 
