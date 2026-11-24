@@ -39,6 +39,8 @@ SETTINGS = (
     Setting("cleanup_days", "Storage", "Delete finished files after", "float", 7, unit="days", minimum=0.04,
             help="keep: true exempts a file."),
     Setting("link_hours", "Links", "Default link expiry", "float", 24, unit="hours", minimum=0.1),
+    Setting("public_files", "Links", "Public file list", "bool", True,
+            help="Anyone can open /files without a password to see every stored file and download it."),
     Setting("link_max_days", "Links", "Maximum link expiry", "float", 7, unit="days", minimum=0.01, maximum=365),
     Setting("live_max_hours", "Live", "Default max_duration", "float", 4, unit="hours", minimum=0.01, maximum=48),
     Setting("live_wait_max_hours", "Live", "Maximum wait_for_start", "float", 12, unit="hours", minimum=0, maximum=168),

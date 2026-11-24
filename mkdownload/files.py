@@ -143,6 +143,33 @@ def delete_expired(downloads: Path, store: Store, settings: Settings, busy_folde
     return count
 
 
+def delete_all(downloads: Path, store: Store, busy_folders: set[str], include_pinned: bool) -> dict:
+    """Delete every stored file. Folders of running, queued or paused jobs are skipped whole; pinned files too,
+    unless include_pinned."""
+    deleted = freed = pinned = 0
+    skipped = []
+    for job_folder in sorted(downloads.iterdir()):
+        if not job_folder.is_dir() or job_folder.name.startswith("."):
+            continue
+        if job_folder.name in busy_folders:
+            skipped.append(job_folder.name)
+            continue
+        for root, _, names in os.walk(job_folder):
+            for name in names:
+                file = Path(root) / name
+                path = to_relative(downloads, file)
+                row = store.file_by_path(path)
+                if row is not None and row["keep"] and not include_pinned:
+                    pinned += 1
+                    continue
+                freed += file.stat().st_size
+                file.unlink(missing_ok=True)
+                store.delete_file(path)
+                deleted += 1
+        remove_empty_folders(job_folder)
+    return {"deleted_files": deleted, "freed_bytes": freed, "kept_pinned": pinned, "skipped_active_jobs": skipped}
+
+
 def remove_empty_folders(folder: Path) -> None:
     for root, dirs, _ in os.walk(folder, topdown=False):
         for name in dirs:

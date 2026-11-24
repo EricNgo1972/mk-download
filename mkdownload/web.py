@@ -94,6 +94,7 @@ def build_app(service: Service) -> Starlette:
         Route("/f/{token}", serve_file),
         Route("/f/{token}/{name:path}", serve_file),
         Route("/", lambda request: RedirectResponse("/settings")),
+        Route("/files", pages.public_files, methods=["GET"]),
         Route("/settings", pages.show, methods=["GET"]),
         Route("/settings/login", pages.login, methods=["POST"]),
         Route("/settings/logout", pages.logout, methods=["POST"]),
@@ -240,6 +241,38 @@ class Pages:
             return await self.show(request, message="The webhook will be sent again.")
         return RedirectResponse("/settings", status_code=303)
 
+    async def public_files(self, request: Request) -> Response:
+        """Anonymous list of every stored file, each with a fresh signed link. Off with the public_files setting."""
+        settings = self.service.settings
+        if not settings["public_files"]:
+            return PlainTextResponse("Not found.", status_code=404)
+        downloads = self.service.env.downloads
+        items = files.list_files(downloads, self.service.store, settings, "")
+        now = time.time()
+        rows = []
+        for item in items:
+            expires = now + settings["link_hours"] * 3600
+            if item["deletes_at"] is not None:
+                expires = min(expires, item["deletes_at"])
+            link = links.build_link("", self.service.env.link_secret, item["path"], int(expires))
+            folder, _, name = item["path"].rpartition("/")
+            deletes = "kept" if item["deletes_at"] is None else format_time(item["deletes_at"])
+            rows.append(
+                f'<tr><td class="wrap"><a href="{e(link)}">{e(name)}</a><div class="muted small">{e(folder)}</div></td>'
+                f'<td class="num">{e(format_size(item["size"]))}</td><td>{format_time(item["created"])}</td>'
+                f'<td>{e(deletes)}</td></tr>'
+            )
+        body = "".join(rows) or '<tr><td colspan="4" class="muted">No files.</td></tr>'
+        total = format_size(sum(item["size"] for item in items))
+        response = HTMLResponse(PAGE.format(title="mk-download files", body=f"""
+<header><h1>Files</h1><span class="muted small">{len(items)} file(s) · {e(total)}</span></header>
+<p class="muted">Click a name to download it. Links on this page work for {settings["link_hours"]:g} hours,
+and files are deleted automatically on the date shown.</p>
+<table><thead><tr><th>Name</th><th class="num">Size</th><th>Added</th><th>Auto-delete</th></tr></thead><tbody>{body}</tbody></table>"""))
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        return response
+
     # rendering
 
     def render(self, csrf: str, message: str, problems: list[str], base_url: str = "") -> str:
@@ -298,8 +331,8 @@ class Pages:
         queued = service.store.count_jobs("queued")
         pending = service.store.count_events("pending")
         return PAGE.format(
-            body=f"""
-<header><h1>mk-download</h1><nav><a href="#guide">User guide</a><form method="post" action="/settings/logout">{hidden}<button class="link">Sign out</button></form></nav></header>
+            title="mk-download settings", body=f"""
+<header><h1>mk-download</h1><nav><a href="/files">Files</a><a href="#guide">User guide</a><form method="post" action="/settings/logout">{hidden}<button class="link">Sign out</button></form></nav></header>
 {"".join(notices)}
 <section class="stats">
   <div><span class="label">Disk used</span><span class="value">{files.gib(used)} of {files.gib(quota)}</span>
@@ -341,6 +374,14 @@ def e(value: Any) -> str:
 
 def format_time(timestamp: float | None) -> str:
     return datetime.fromtimestamp(timestamp, UTC).strftime("%Y-%m-%d %H:%M UTC") if timestamp else ""
+
+
+def format_size(size: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return ""
 
 
 def format_percent(value: float | None) -> str:
@@ -413,6 +454,7 @@ This page never shows it.</p>
 <li>"Record this livestream for 2 hours: https://…", then "stop the recording" to end it early and keep what was recorded</li>
 <li>"Download this magnet link, but only the .mkv files." (torrents and eD2k links work too)</li>
 <li>"What's downloading right now?", "Pause job …", "Cancel job …", "How much disk is left?"</li>
+<li>"List my downloaded files", "Delete …", "Delete all downloaded files"</li>
 </ul>
 <p>Video sites include YouTube, TikTok, Instagram and Facebook Reels, Bilibili and about 1,800 others, plus raw
 <code>.m3u8</code> / <code>.mpd</code> stream URLs.</p>
@@ -450,6 +492,7 @@ The usual order is <code>probe</code> → <code>download</code> → <code>get_jo
 <tr><th><code>list_jobs(status?)</code>, <code>get_job(id)</code></th><td>Status, percent, speed, ETA, recorded time, error, and the files with links.</td></tr>
 <tr><th><code>pause</code>, <code>resume</code>, <code>stop</code>, <code>cancel</code></th><td><code>stop</code> ends a live recording and keeps it. <code>cancel</code> deletes the job's files.</td></tr>
 <tr><th><code>list_files</code>, <code>delete_file</code>, <code>clip_file</code>, <code>get_link</code></th><td>List and delete stored files, cut a clip from a file, and get a signed link.</td></tr>
+<tr><th><code>delete_all_files(confirm)</code></th><td>Deletes every stored file. It skips jobs that are running, queued or paused, and files pinned with <code>keep</code> unless you pass <code>include_pinned</code>.</td></tr>
 <tr><th><code>disk_usage</code>, <code>set_cookies</code>, <code>get_settings</code></th><td>Quota usage, login cookies per site, and the current limits (read-only).</td></tr>
 </tbody></table>
 <p>Job states: <code>queued</code> → <code>waiting</code> (scheduled live streams only) → <code>downloading</code> / <code>recording</code>
@@ -459,6 +502,7 @@ The usual order is <code>probe</code> → <code>download</code> → <code>get_jo
 <table class="kv"><tbody>
 <tr><th><code>POST /mcp</code></th><td>MCP over Streamable HTTP (stateless JSON-RPC). Needs <code>Authorization: Bearer &lt;MCP_TOKEN&gt;</code>.</td></tr>
 <tr><th><code>GET /f/&lt;token&gt;/&lt;name&gt;</code></th><td>Downloads a file. The link is signed and expires, so no login is needed.</td></tr>
+<tr><th><code>GET /files</code></th><td>A public list of every stored file with download links. No password is needed. Turn it off with <b>Public file list</b> under Links.</td></tr>
 <tr><th><code>GET /healthz</code></th><td>Open to anyone. It only reports that the process is up.</td></tr>
 <tr><th><code>/settings</code></th><td>This page, protected by the admin password.</td></tr>
 </tbody></table>
@@ -493,7 +537,7 @@ arrive more than once, so ignore repeats of an <code>event_id</code>.</p>
 
 def render_login(error: str = "") -> str:
     note = f'<div class="note bad">{e(error)}</div>' if error else ""
-    return PAGE.format(body=f"""
+    return PAGE.format(title="mk-download settings", body=f"""
 <div class="login"><h1>mk-download</h1><p class="muted">Settings are behind the admin password.</p>{note}
 <form method="post" action="/settings/login"><input type="password" name="password" placeholder="Admin password" autofocus required>
 <button type="submit">Sign in</button></form></div>""")
@@ -501,7 +545,7 @@ def render_login(error: str = "") -> str:
 
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>mk-download settings</title>
+<title>{title}</title>
 <style>
 :root {{ --bg:#f7f7f5; --panel:#fff; --text:#1d1d1b; --muted:#6b6b66; --line:#e2e1dc; --accent:#2f6fde; --ok:#1f7a4d; --bad:#b3261e; --warn:#8a5a00; }}
 @media (prefers-color-scheme: dark) {{ :root {{ --bg:#161615; --panel:#1f1f1d; --text:#ecebe6; --muted:#9d9c96; --line:#33322f; --accent:#6f9df0; --ok:#5cc28e; --bad:#f08a82; --warn:#e0b45a; }} }}
@@ -529,7 +573,7 @@ button.link {{ background:none; color:var(--accent); padding:0; font-size:13px; 
 .actions {{ margin-top:8px; }}
 table {{ width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:8px; font-size:13px; }}
 th, td {{ text-align:left; padding:6px 10px; border-top:1px solid var(--line); vertical-align:top; }} th {{ border-top:0; color:var(--muted); font-weight:500; }}
-td.wrap {{ word-break:break-all; }}
+td.wrap {{ word-break:break-all; }} .num {{ text-align:right; white-space:nowrap; }}
 .cookies {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:8px 12px; margin-top:10px; }}
 .cookies label {{ display:flex; flex-direction:column; font-size:13px; color:var(--muted); }} .cookies .full {{ grid-column:1/-1; }}
 .note {{ border-radius:6px; padding:8px 12px; margin:10px 0; border:1px solid; }}
