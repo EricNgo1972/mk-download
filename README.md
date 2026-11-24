@@ -17,6 +17,7 @@ A headless download service that an AI agent operates over MCP. It runs as one M
 |---|---|---|
 | `/mcp` | the agent (Streamable HTTP, stateless) | `Authorization: Bearer <MCP_TOKEN>` |
 | `/settings` | you: settings, cookies, jobs, and a user guide (connecting an agent, MCP tools, HTTP API) | `ADMIN_PASSWORD`, session cookie, CSRF token |
+| `/files` | anyone: every stored file with a download link (setting *Public file list*, default on) | open |
 | `/f/<token>/<name>` | anyone with the link | HMAC-signed path and expiry (`LINK_SECRET`) |
 | `/healthz` | the provisioner | open; says only that the process is up |
 
@@ -31,6 +32,7 @@ A headless download service that an AI agent operates over MCP. It runs as one M
 | `list_jobs(status?)`, `get_job(id)` | Status, percent, speed, ETA, recorded time, error, files with links |
 | `pause`, `resume`, `stop`, `cancel` | `stop` ends a live recording and keeps it; `cancel` deletes the files |
 | `list_files`, `delete_file`, `clip_file`, `get_link` | Stored files, cuts, signed links |
+| `delete_all_files(confirm, include_pinned?)` | Deletes every stored file; skips running, queued and paused jobs, and pinned files unless `include_pinned` |
 | `disk_usage`, `set_cookies`, `get_settings` | Quota, login cookies per site, read-only limits |
 
 Job states: `queued` → `waiting` (scheduled live only) → `downloading` / `recording` → `finalizing` → `completed`;
@@ -40,6 +42,18 @@ Tool errors are JSON: `{"error": "<code>", "message": "<one sentence>"}`, with c
 `login_required`, `blocked_by_challenge`, `drm_protected`, `not_live`, `is_live`, `unsupported_url`,
 `source_unavailable`, `queue_full`, `site_blocked`, `engine_disabled`, `invalid_request`, `not_found`,
 `download_failed`, `internal_error`.
+
+## Command line: `mkd.py`
+
+Manage stored files from a terminal (Python 3.10+, standard library only):
+
+```bash
+export MKD_URL=https://download.maplekiosk.ca MCP_TOKEN=<MCP_TOKEN>
+./mkd.py list                          # numbered list: size, created, auto-delete date, path
+./mkd.py get_file_url 1 [hours]        # signed download link for file #1 (or pass a path)
+./mkd.py delete_file 2 3               # delete files by number or path; a job id deletes its folder
+./mkd.py delete_all [--include-pinned] [--yes]   # asks first unless --yes
+```
 
 ## Webhooks
 

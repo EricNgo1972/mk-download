@@ -1,4 +1,4 @@
-"""The 17 MCP tools the agent operates the service with. Downloads are asynchronous: download returns a job id at
+"""The 18 MCP tools the agent operates the service with. Downloads are asynchronous: download returns a job id at
 once; poll get_job, or pass callback_url to be told by webhook.
 
 Errors come back as tool errors whose text is JSON: {"error": "<code>", "message": "<one sentence>"}.
@@ -273,6 +273,19 @@ def build_server(service: Service) -> MCPServer:
             return {"deleted": relative}
         except JobError as error:
             raise fail(error) from None
+
+    @server.tool()
+    async def delete_all_files(
+        confirm: Annotated[bool, Field(description="Must be true; deletes cannot be undone.")],
+        include_pinned: Annotated[bool, Field(description="Also delete files kept with keep=true.")] = False,
+    ) -> dict[str, Any]:
+        """Delete every stored file. Running, queued and paused jobs are left alone (cancel them first); pinned
+        files are kept unless include_pinned. Ask the user before calling this."""
+        if not confirm:
+            raise fail(JobError(JobError.INVALID_REQUEST, "Pass confirm=true to delete every stored file."))
+        result = files.delete_all(service.env.downloads, service.store, jobs.busy_folders(), include_pinned)
+        result["freed"] = files.gib(result["freed_bytes"])
+        return result
 
     @server.tool()
     async def clip_file(
