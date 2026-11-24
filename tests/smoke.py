@@ -90,9 +90,9 @@ def main() -> None:
 
     _, reply = rpc("tools/list")
     names = sorted(tool["name"] for tool in reply["result"]["tools"])
-    if len(names) != 18:
-        fail(f"expected 18 tools, got {len(names)}: {names}")
-    ok("18 MCP tools: " + ", ".join(names))
+    if len(names) != 19:
+        fail(f"expected 19 tools, got {len(names)}: {names}")
+    ok("19 MCP tools: " + ", ".join(names))
 
     probe = call("probe", url=MEDIA)
     if probe.get("type") != "video":

@@ -3,6 +3,7 @@
 
     export MKD_URL=https://download.maplekiosk.ca MCP_TOKEN=...
     mkd.py list                          numbered list of stored files
+    mkd.py downloading                   what is downloading now, with % complete
     mkd.py get_file_url <file> [hours]   signed download link (file = number from list, or path)
     mkd.py delete_file <file>...         delete files (numbers or paths; a job id deletes its folder)
     mkd.py delete_all [--include-pinned] [--yes]
@@ -83,6 +84,35 @@ def cmd_list(args: list[str]) -> None:
     print(f"\n{len(items)} file(s), {size(sum(item['size'] for item in items))}")
 
 
+def duration(seconds: float | None) -> str:
+    if not isinstance(seconds, int | float):
+        return ""
+    seconds = int(seconds)
+    return f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}" if seconds >= 3600 else f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def cmd_downloading(args: list[str]) -> None:
+    result = call("active_downloads")
+    if not result["active"]:
+        print("Nothing is downloading." + (f" {result['paused']} paused." if result["paused"] else ""))
+        return
+    for item in result["active"]:
+        percent = f"{item['percent']:5.1f}%" if item["percent"] is not None else "   - "
+        if item["recorded_seconds"] is not None:
+            detail = f"recorded {duration(item['recorded_seconds'])}"
+        else:
+            done, total = item["downloaded_bytes"], item["total_bytes"]
+            detail = f"{size(done or 0)} of {size(total)}" if total else ""
+            if item["speed_bytes_per_s"]:
+                detail += f"  {size(item['speed_bytes_per_s'])}/s"
+            if item["eta_seconds"]:
+                detail += f"  ETA {duration(item['eta_seconds'])}"
+        print(f"{percent}  {item['status']:<11}  {item['job_id']}  {item['title']}")
+        if detail:
+            print(f"{'':20}{detail.strip()}")
+    print(f"\n{result['running']} running, {result['queued']} queued, {result['paused']} paused")
+
+
 def cmd_get_file_url(args: list[str]) -> None:
     if not args:
         sys.exit("usage: mkd.py get_file_url <number|path> [hours]")
@@ -118,7 +148,7 @@ def cmd_delete_all(args: list[str]) -> None:
         print("Skipped active jobs:", ", ".join(result["skipped_active_jobs"]))
 
 
-COMMANDS = {"list": cmd_list, "get_file_url": cmd_get_file_url, "delete_file": cmd_delete_file, "delete_all": cmd_delete_all}
+COMMANDS = {"list": cmd_list, "downloading": cmd_downloading, "get_file_url": cmd_get_file_url, "delete_file": cmd_delete_file, "delete_all": cmd_delete_all}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:

@@ -88,7 +88,10 @@ def gib(size: int) -> str:
     return f"{size / 1024**3:.2f} GB"
 
 
-def list_files(downloads: Path, store: Store, settings: Settings, folder: str = "") -> list[dict]:
+def list_files(downloads: Path, store: Store, settings: Settings, folder: str = "",
+               skip_folders: set[str] = frozenset()) -> list[dict]:
+    """Finished files. Job folders in skip_folders (jobs not done yet) are left out whole: while a job runs, its
+    folder can hold source streams and half-converted output under finished-looking names."""
     base = resolve(downloads, folder) if folder else downloads
     if not base.is_dir():
         raise JobError(JobError.NOT_FOUND, f"No folder {folder!r}.")
@@ -100,6 +103,8 @@ def list_files(downloads: Path, store: Store, settings: Settings, folder: str = 
             if not is_finished_file(file):
                 continue
             path = to_relative(downloads, file)
+            if path.split("/", 1)[0] in skip_folders:
+                continue
             created, keep = file_created(store, path, file)
             result.append({
                 "path": path,
